@@ -108,10 +108,13 @@
 
   /* ---- placement (percent of the 1920x1080 stage) ---- */
   #item-folder{    left: 29.74%; top: 58.55%; width: 19.27%; z-index: 10; --dur:6.2s; --delay:.2s;  --bob:-9px;  --bobrot:-1deg; }
-  #item-keychain{  left: 14.48%; top: 15.85%; width: 30.42%; z-index: 30; --dur:6.8s; --delay:.9s;  --bob:-10px; --bobrot:1.2deg; }
+  #item-blob{      left: 71.0%;  top: 13.93%; width: 19.27%; z-index: 5;  --dur:5.3s; --delay:1.15s;--bob:-11px; --bobrot:2deg; }
+  #item-pacman{    left: 65.08%; top: 9.52%;  width: 14.84%; z-index: 8;  --dur:4.7s; --delay:.35s; --bob:-13px; --bobrot:-2deg; }
   #item-character{ left: 35.13%; top: 16.69%; width: 34.84%; z-index: 20; --dur:5.6s; --delay:1.6s; --bob:-7px;  --bobrot:0deg; }
-  #item-blob{      left: 71.0%;  top: 13.93%; width: 19.27%; z-index: 40; --dur:5.3s; --delay:1.15s;--bob:-11px; --bobrot:2deg; }
-  #item-pacman{    left: 65.08%; top: 9.52%;  width: 14.84%; z-index: 50; --dur:4.7s; --delay:.35s; --bob:-13px; --bobrot:-2deg; }
+  #item-keychain{  left: 14.48%; top: 15.85%; width: 30.42%; z-index: 30; --dur:6.8s; --delay:.9s;  --bob:-10px; --bobrot:1.2deg; }
+
+  /* character's tilt is driven every frame by JS — no CSS transition fighting the per-frame updates */
+  #item-character .float-inner{ transition: none; }
 
   @media (max-width: 720px){
     .stage{ width: 100vw; }
@@ -177,34 +180,50 @@
   var outers = Array.prototype.slice.call(document.querySelectorAll('.float-outer'));
   var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   var topZ = 90;
+  var RESTITUTION = 0.45;   // how bouncy the wall hit is (0 = dead stop, 1 = perfectly elastic)
+  var STIFF = reduceMotion ? 0.4 : 0.17;
+  var DAMP  = reduceMotion ? 0.5 : 0.80;
 
   function clamp(v, lo, hi){ return Math.min(hi, Math.max(lo, v)); }
+
+  // ---- global cursor tracking, used for the character's directional 3D tilt ----
+  var mouseX = null, mouseY = null, lastMouseX = null, lastMouseY = null;
+  window.addEventListener('pointermove', function(e){
+    mouseX = e.clientX; mouseY = e.clientY;
+  }, { passive: true });
+  var charTilt = { x: 0, y: 0 };
+  var TILT_SCALE = 0.55, MAX_TILT = 16;
 
   var registry = outers.map(function(outer){
     var dragEl = outer.querySelector('.float-drag');
     var inner  = outer.querySelector('.float-inner');
     var baseZ  = parseInt(getComputedStyle(outer).zIndex, 10) || 1;
-    var orig   = null;
+    var isCharacter = (outer.id === 'item-character');
+    var orig = null, bounds = null;
 
     function measure(){
       var sr = stage.getBoundingClientRect();
-      var prevT = dragEl.style.transform;
-      dragEl.style.transform = 'none';
-      var r = outer.getBoundingClientRect();
-      dragEl.style.transform = prevT;
+      var r  = outer.getBoundingClientRect(); // .float-outer itself is never transformed
       orig = { left: r.left - sr.left, top: r.top - sr.top, width: r.width, height: r.height };
+      bounds = {
+        minX: -orig.left,
+        maxX: sr.width  - orig.left - orig.width,
+        minY: -orig.top,
+        maxY: sr.height - orig.top - orig.height
+      };
     }
+    measure();
 
-    var s = { x:0, y:0, vx:0, vy:0, tx:0, ty:0, dragging:false, startPX:0, startPY:0, startX:0, startY:0 };
+    var s = { x:0, y:0, vx:0, vy:0, tx:0, ty:0, dragging:false, hover:false,
+              startPX:0, startPY:0, startX:0, startY:0 };
 
     function onDown(e){
       if (e.pointerType === 'mouse' && e.button !== 0) return;
-      measure();
       s.dragging = true;
       outer.classList.add('is-paused', 'is-dragging');
       topZ += 1;
       outer.style.zIndex = topZ;
-      inner.style.transform = '';
+      if (!isCharacter){ inner.style.transform = ''; }
       s.startPX = e.clientX; s.startPY = e.clientY;
       s.startX = s.x; s.startY = s.y;
       try{ outer.setPointerCapture(e.pointerId); }catch(err){}
@@ -215,29 +234,23 @@
       if (!s.dragging) return;
       var dx = e.clientX - s.startPX;
       var dy = e.clientY - s.startPY;
-      var tx = s.startX + dx;
-      var ty = s.startY + dy;
-
-      var sr = stage.getBoundingClientRect();
-      var margin = 0.15;
-      var cx = clamp(orig.left + orig.width/2 + tx, -sr.width*margin, sr.width*(1+margin));
-      var cy = clamp(orig.top + orig.height/2 + ty, -sr.height*margin, sr.height*(1+margin));
-      s.tx = cx - (orig.left + orig.width/2);
-      s.ty = cy - (orig.top + orig.height/2);
+      // clamp the drag target itself to the stage — you can't pull it past the wall while holding it
+      s.tx = clamp(s.startX + dx, bounds.minX, bounds.maxX);
+      s.ty = clamp(s.startY + dy, bounds.minY, bounds.maxY);
     }
 
     function onUp(e){
       if (!s.dragging) return;
       s.dragging = false;
       outer.classList.remove('is-dragging', 'is-paused');
-      outer.style.zIndex = baseZ;
+      outer.style.zIndex = s.hover ? 80 : baseZ;
       try{ outer.releasePointerCapture(e.pointerId); }catch(err){}
     }
 
     outer.addEventListener('pointerdown', onDown);
     outer.addEventListener('pointermove', function(e){
       if (s.dragging){ onMove(e); return; }
-      if (e.pointerType !== 'mouse') return;
+      if (e.pointerType !== 'mouse' || isCharacter) return; // character's tilt is handled globally in tick()
       var r = outer.getBoundingClientRect();
       var px = (e.clientX - r.left) / r.width - 0.5;
       var py = (e.clientY - r.top) / r.height - 0.5;
@@ -253,17 +266,24 @@
     outer.addEventListener('pointerup', onUp);
     outer.addEventListener('pointercancel', onUp);
     outer.addEventListener('pointerenter', function(e){
-      if (s.dragging || e.pointerType !== 'mouse') return;
-      outer.style.zIndex = 80;
+      if (e.pointerType !== 'mouse') return;
+      s.hover = true;
+      if (!s.dragging) outer.style.zIndex = 80;
     });
     outer.addEventListener('pointerleave', function(){
+      s.hover = false;
       if (s.dragging) return;
       outer.style.zIndex = baseZ;
-      inner.style.transition = 'transform .6s cubic-bezier(.16,1,.3,1)';
-      inner.style.transform = '';
+      if (!isCharacter){
+        inner.style.transition = 'transform .6s cubic-bezier(.16,1,.3,1)';
+        inner.style.transform = '';
+      }
     });
 
-    return { outer: outer, dragEl: dragEl, s: s };
+    if (isCharacter){ inner.style.transition = 'none'; }
+
+    return { outer: outer, dragEl: dragEl, inner: inner, s: s, isCharacter: isCharacter,
+             getBounds: function(){ return bounds; }, remeasure: measure };
   });
 
   window.addEventListener('resize', function(){
@@ -271,13 +291,23 @@
       var s = it.s;
       s.x = 0; s.y = 0; s.vx = 0; s.vy = 0; s.tx = 0; s.ty = 0;
       it.dragEl.style.transform = '';
+      it.remeasure();
     });
   });
 
-  // spring physics loop — gives every drag a light, bouncy follow + settle
-  var STIFF = reduceMotion ? 0.4 : 0.17;
-  var DAMP  = reduceMotion ? 0.5 : 0.80;
+  // main loop — spring-follows drags, bounces items off the stage walls,
+  // and drives the character's cursor-direction 3D tilt
   (function tick(){
+    var mdx = 0, mdy = 0;
+    if (mouseX !== null){
+      if (lastMouseX !== null){ mdx = mouseX - lastMouseX; mdy = mouseY - lastMouseY; }
+      lastMouseX = mouseX; lastMouseY = mouseY;
+    }
+    var rawTiltY = reduceMotion ? 0 : clamp(mdx * TILT_SCALE, -MAX_TILT, MAX_TILT);
+    var rawTiltX = reduceMotion ? 0 : clamp(-mdy * TILT_SCALE, -MAX_TILT, MAX_TILT);
+    charTilt.x += (rawTiltX - charTilt.x) * 0.12;
+    charTilt.y += (rawTiltY - charTilt.y) * 0.12;
+
     registry.forEach(function(it){
       var s = it.s;
       var ax = (s.tx - s.x) * STIFF;
@@ -286,10 +316,25 @@
       s.vy = (s.vy + ay) * DAMP;
       s.x += s.vx;
       s.y += s.vy;
+
+      // bounce off the stage edges so nothing ever leaves the screen
+      var b = it.getBounds();
+      if (s.x < b.minX){ s.x = b.minX; s.vx = Math.abs(s.vx) * RESTITUTION; }
+      else if (s.x > b.maxX){ s.x = b.maxX; s.vx = -Math.abs(s.vx) * RESTITUTION; }
+      if (s.y < b.minY){ s.y = b.minY; s.vy = Math.abs(s.vy) * RESTITUTION; }
+      else if (s.y > b.maxY){ s.y = b.maxY; s.vy = -Math.abs(s.vy) * RESTITUTION; }
+
       var rot = reduceMotion ? 0 : clamp(s.vx * 0.6, -16, 16);
       it.dragEl.style.transform =
         'translate3d(' + s.x.toFixed(1) + 'px,' + s.y.toFixed(1) + 'px,0) rotate(' + rot.toFixed(2) + 'deg)';
+
+      if (it.isCharacter && !s.dragging){
+        var scale = s.hover ? 1.045 : 1;
+        it.inner.style.transform =
+          'perspective(1100px) rotateX(' + charTilt.x.toFixed(2) + 'deg) rotateY(' + charTilt.y.toFixed(2) + 'deg) scale(' + scale + ')';
+      }
     });
+
     requestAnimationFrame(tick);
   })();
 })();
